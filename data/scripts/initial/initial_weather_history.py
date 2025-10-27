@@ -223,7 +223,7 @@ def save_weather_data(zone_name, weather_data, data_dir=None):
         data_dir: Directory to save data (relative to root)
     """
     if data_dir is None:
-        data_dir = os.path.join(root_dir, 'data', 'weather')
+        data_dir = os.path.join(root_dir, 'data', 'weather', 'historic')
     
     # Ensure output directory exists
     os.makedirs(data_dir, exist_ok=True)
