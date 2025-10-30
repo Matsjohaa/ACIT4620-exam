@@ -6,7 +6,7 @@ RUN SCRIPT IN UPDATE_DATA INSTEAD FOR REGULAR UPDATES.
 import os
 import pandas as pd
 from datetime import datetime, timedelta
-from entsoe import EntsoePandasClient
+from entsoe.entsoe import EntsoePandasClient
 from dotenv import load_dotenv
 import warnings
 warnings.filterwarnings("ignore")
@@ -71,7 +71,8 @@ def get_solar_forecast_data(client, zone_code, zone_name, start_date, end_date, 
                 end=end_date
             )
         elif forecast_type == 'actual':
-            # Actual generation data
+            # Actual generation per production type - specifically for solar
+            # First try with default parameters to see what we get
             data = client.query_generation(
                 country_code=zone_code,
                 start=start_date,
@@ -90,9 +91,40 @@ def get_solar_forecast_data(client, zone_code, zone_name, start_date, end_date, 
             if 'Solar' in data_df.columns:
                 data_df = data_df[['Solar']].copy()
                 data_df.rename(columns={'Solar': 'solar_forecast_mw'}, inplace=True)
+            elif forecast_type == 'actual' and len(data_df.columns) > 1:
+                # For actual generation, we might get multiple columns (generation vs consumption)
+                # We ONLY want generation data, not consumption
+                print(f"  Multiple columns found: {list(data_df.columns)}")
+                col_sums = data_df.sum()
+                print(f"  Column sums: {dict(col_sums)}")
+                
+                # Look for generation-related column names first
+                generation_cols = [col for col in data_df.columns if 
+                                 'generation' in str(col).lower() or 
+                                 'produced' in str(col).lower() or
+                                 'inBiddingZone' in str(col)]
+                
+                if generation_cols:
+                    selected_col = generation_cols[0]
+                    print(f"  Found generation column: {selected_col}")
+                else:
+                    # Fallback: assume the column with positive values is generation
+                    # Solar consumption is typically zero or very small
+                    max_col = col_sums.idxmax()
+                    selected_col = max_col
+                    print(f"  No clear generation column found, using column with highest values: {selected_col}")
+                
+                data_df = data_df[[selected_col]].copy()
+                data_df.rename(columns={selected_col: 'solar_forecast_mw'}, inplace=True)
             elif len(data_df.columns) == 1:
                 # Assume single column is solar data
                 data_df.rename(columns={data_df.columns[0]: 'solar_forecast_mw'}, inplace=True)
+            else:
+                print(f"  Unexpected data structure: {data_df.columns}")
+                # Take the first column as a fallback
+                if len(data_df.columns) > 0:
+                    data_df = data_df.iloc[:, [0]].copy()
+                    data_df.rename(columns={data_df.columns[0]: 'solar_forecast_mw'}, inplace=True)
             
             # Add metadata columns
             data_df['zone'] = zone_name
@@ -113,6 +145,7 @@ def get_solar_forecast_data(client, zone_code, zone_name, start_date, end_date, 
 def save_zone_data_combined(zone_data_dict, zone_name, data_dir='data/energy'):
     """
     Save combined data for a specific zone to a CSV file with format: date, actual, day-ahead, intraday
+    If file exists, merge new data with existing data.
     
     Args:
         zone_data_dict: Dictionary with keys 'day_ahead', 'intraday', 'actual' containing DataFrames
@@ -126,11 +159,21 @@ def save_zone_data_combined(zone_data_dict, zone_name, data_dir='data/energy'):
     filename = f"{zone_name.lower().replace('-', '_')}_solar.csv"
     filepath = os.path.join(data_dir, filename)
     
-    # Combine all data types into one DataFrame
+    # Check if file exists and load existing data
+    existing_df = pd.DataFrame()
+    if os.path.exists(filepath):
+        print(f"Loading existing data from {filepath}")
+        existing_df = pd.read_csv(filepath, index_col=0, parse_dates=True)
+        print(f"Existing data: {len(existing_df)} records from {existing_df.index.min()} to {existing_df.index.max()}")
+    
+    # Create new combined DataFrame
     combined_df = pd.DataFrame()
     
-    # Get all unique timestamps from all data types
+    # Get all unique timestamps from all data types AND existing data
     all_timestamps = set()
+    if not existing_df.empty:
+        all_timestamps.update(existing_df.index)
+    
     for data_type, df in zone_data_dict.items():
         if not df.empty:
             all_timestamps.update(df.index)
@@ -143,12 +186,18 @@ def save_zone_data_combined(zone_data_dict, zone_name, data_dir='data/energy'):
     combined_df = pd.DataFrame(index=sorted(all_timestamps))
     combined_df.index.name = 'date'
     
-    # Add columns for each forecast type
+    # Initialize columns
     combined_df['actual'] = None
     combined_df['day-ahead'] = None
     combined_df['intraday'] = None
     
-    # Fill in the data
+    # Fill in existing data first
+    if not existing_df.empty:
+        for col in ['actual', 'day-ahead', 'intraday']:
+            if col in existing_df.columns:
+                combined_df.loc[existing_df.index, col] = existing_df[col]
+    
+    # Fill in new data (will overwrite existing where overlapping)
     for data_type, df in zone_data_dict.items():
         if not df.empty:
             if data_type == 'day_ahead':
@@ -161,9 +210,20 @@ def save_zone_data_combined(zone_data_dict, zone_name, data_dir='data/energy'):
     # Save to CSV
     combined_df.to_csv(filepath, index=True)
     print(f"Saved {len(combined_df)} records to {filepath}")
-    print(f"  - Actual records: {combined_df['actual'].notna().sum()}")
-    print(f"  - Day-ahead records: {combined_df['day-ahead'].notna().sum()}")
-    print(f"  - Intraday records: {combined_df['intraday'].notna().sum()}")
+    
+    # Count data by type
+    actual_count = combined_df['actual'].notna().sum()
+    day_ahead_count = combined_df['day-ahead'].notna().sum()
+    intraday_count = combined_df['intraday'].notna().sum()
+    
+    print(f"  - Actual records: {actual_count}")
+    print(f"  - Day-ahead records: {day_ahead_count}")
+    print(f"  - Intraday records: {intraday_count}")
+    
+    # Show what was added
+    if not existing_df.empty:
+        new_actual = combined_df.loc[~combined_df.index.isin(existing_df.index), 'actual'].notna().sum()
+        print(f"  - NEW actual records added: {new_actual}")
 
 def retrieve_italy_solar_data(start_year=2015, forecast_types=['day_ahead', 'intraday', 'actual']):
     """
@@ -273,9 +333,9 @@ def get_available_data_summary(data_dir='data/energy'):
             print(f"{file}: Error reading file - {e}")
 
 if __name__ == "__main__":
-    # Retrieve solar data for all Italian bidding zones
+    # Retrieve solar data for Sicily only, focusing on missing actual data from 2021 onwards
     # You can modify start_year and forecast_types as needed
-    retrieve_italy_solar_data(start_year=2015, forecast_types=['day_ahead', 'intraday', 'actual'])
+    retrieve_italy_solar_data(start_year=2021, forecast_types=['actual'])
     
     # Show summary of retrieved data
     get_available_data_summary()

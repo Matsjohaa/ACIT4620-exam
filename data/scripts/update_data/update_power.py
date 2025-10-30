@@ -16,7 +16,7 @@ import sys
 import pandas as pd
 from datetime import datetime, timedelta
 import pytz
-from entsoe import EntsoePandasClient
+from entsoe.entsoe import EntsoePandasClient
 from dotenv import load_dotenv
 import warnings
 warnings.filterwarnings("ignore")
@@ -86,13 +86,33 @@ def fetch_solar_data(client, zone_code, start_date, end_date, data_type):
             if isinstance(data, pd.DataFrame):
                 if 'Solar' in data.columns:
                     return data['Solar']
+                elif len(data.columns) > 1:
+                    # For actual generation, we might get multiple columns (generation vs consumption)
+                    # We ONLY want generation data, not consumption
+                    print(f"    Multiple columns found: {list(data.columns)}")
+                    col_sums = data.sum()
+                    print(f"    Column sums: {dict(col_sums)}")
+                    
+                    # Look for generation-related column names first
+                    generation_cols = [col for col in data.columns if 
+                                     'generation' in str(col).lower() or 
+                                     'produced' in str(col).lower() or
+                                     'inBiddingZone' in str(col)]
+                    
+                    if generation_cols:
+                        selected_col = generation_cols[0]
+                        print(f"    Found generation column: {selected_col}")
+                    else:
+                        # Fallback: assume the column with positive values is generation
+                        max_col = col_sums.idxmax()
+                        selected_col = max_col
+                        print(f"    No clear generation column found, using column with highest values: {selected_col}")
+                    
+                    return data[selected_col]
                 elif len(data.columns) == 1:
                     return data.iloc[:, 0]
                 else:
-                    # Sum all solar-related columns if multiple
-                    solar_cols = [col for col in data.columns if 'solar' in col.lower() or 'B16' in str(col)]
-                    if solar_cols:
-                        return data[solar_cols].sum(axis=1)
+                    # Fallback: sum all columns
                     return data.sum(axis=1)
             return data
             
