@@ -142,7 +142,7 @@ def get_solar_forecast_data(client, zone_code, zone_name, start_date, end_date, 
         print(f"Error retrieving {forecast_type} data for {zone_name}: {str(e)}")
         return pd.DataFrame()
 
-def save_zone_data_combined(zone_data_dict, zone_name, data_dir='data/energy'):
+def save_zone_data_combined(zone_data_dict, zone_name, data_dir='data/raw/energy'):
     """
     Save combined data for a specific zone to a CSV file with format: date, actual, day-ahead, intraday
     If file exists, merge new data with existing data.
@@ -301,7 +301,7 @@ def retrieve_italy_solar_data(start_year=2015, forecast_types=['day_ahead', 'int
     
     print("\nItaly solar data retrieval completed!")
 
-def get_available_data_summary(data_dir='data/energy'):
+def get_available_data_summary(data_dir='data/raw/energy'):
     """Print a summary of available data files."""
     print("\n--- Available Solar Data Files ---")
     

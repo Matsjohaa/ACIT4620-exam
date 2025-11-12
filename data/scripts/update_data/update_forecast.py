@@ -178,7 +178,7 @@ def update_weather_forecasts():
     print()
     
     # Setup forecast directory
-    forecast_dir = os.path.join(root_dir, 'data', 'weather', 'forecast')
+    forecast_dir = os.path.join(root_dir, 'data', 'raw', 'weather', 'forecast')
     
     successful_updates = 0
     

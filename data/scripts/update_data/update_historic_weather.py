@@ -268,7 +268,7 @@ def update_weather_data():
     print("Hourly Weather Data Update Script")
     print("="*70)
     
-    weather_dir = os.path.join(root_dir, 'data', 'weather', 'historic')
+    weather_dir = os.path.join(root_dir, 'data', 'raw', 'weather', 'historic')
     
     # Get existing weather files
     weather_files = get_weather_files(weather_dir)

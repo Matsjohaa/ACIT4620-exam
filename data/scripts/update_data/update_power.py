@@ -117,22 +117,28 @@ def fetch_solar_data(client, zone_code, start_date, end_date, data_type):
             return data
             
         elif data_type == 'day_ahead':
-            return client.query_generation_forecast(
+            data = client.query_generation_forecast(
                 zone_code, 
                 start=start_date, 
-                end=end_date, 
-                psr_type='B16',
+                end=end_date,
                 process_type='A01'  # Day-ahead forecast
             )
+            # Filter for solar if we get multiple generation types
+            if isinstance(data, pd.DataFrame) and 'Solar' in data.columns:
+                return data['Solar']
+            return data
             
         elif data_type == 'intraday':
-            return client.query_generation_forecast(
+            data = client.query_generation_forecast(
                 zone_code, 
                 start=start_date, 
-                end=end_date, 
-                psr_type='B16',
+                end=end_date,
                 process_type='A31'  # Intraday forecast
             )
+            # Filter for solar if we get multiple generation types
+            if isinstance(data, pd.DataFrame) and 'Solar' in data.columns:
+                return data['Solar']
+            return data
     except Exception as e:
         print(f"    Error fetching {data_type} data: {e}")
         return pd.Series(dtype=float)
@@ -150,7 +156,7 @@ def get_last_update_date(zone_name, data_dir=None):
     """
     if data_dir is None:
         # Default path relative to root directory
-        data_dir = os.path.join(root_dir, 'data', 'energy')
+        data_dir = os.path.join(root_dir, 'data', 'raw', 'energy')
     
     filename = f"{zone_name.lower().replace('-', '_')}_solar.csv"
     filepath = os.path.join(data_dir, filename)
@@ -170,9 +176,9 @@ def get_last_update_date(zone_name, data_dir=None):
         df['date'] = pd.to_datetime(df['date'])
         last_date = df['date'].max()
         
-        # Convert to UTC timezone for consistency
-        if last_date.tz is None:
-            last_date = last_date.tz_localize('UTC')
+        # Return as naive datetime (no timezone) for consistency
+        if last_date.tz is not None:
+            last_date = last_date.tz_localize(None)
         
         print(f"  Last data date for {zone_name}: {last_date.date()}")
         return last_date
@@ -204,12 +210,9 @@ def update_zone_data(zone_name, zone_code, start_date, end_date, forecast_types)
         data = fetch_solar_data(client, zone_code, start_date, end_date, forecast_type)
         
         if not data.empty:
-            # Convert to daily data if hourly
-            if len(data) > (end_date - start_date).days * 2:  # More than 2 points per day suggests hourly
-                daily_data = data.resample('D').sum()
-            else:
-                daily_data = data
-            zone_data[forecast_type] = daily_data
+            # Keep the original resolution (15-minute intervals)
+            # Do NOT aggregate to daily - we want to preserve the time series detail
+            zone_data[forecast_type] = data
         else:
             zone_data[forecast_type] = pd.Series(dtype=float)
         
@@ -230,7 +233,7 @@ def merge_with_existing_data(zone_name, new_zone_data, data_dir=None):
     """
     if data_dir is None:
         # Default path relative to root directory
-        data_dir = os.path.join(root_dir, 'data', 'energy')
+        data_dir = os.path.join(root_dir, 'data', 'raw', 'energy')
     
     # Ensure output directory exists
     os.makedirs(data_dir, exist_ok=True)
@@ -294,7 +297,7 @@ def merge_with_existing_data(zone_name, new_zone_data, data_dir=None):
     else:
         print(f"  No data to save for {zone_name}")
 
-def incremental_update(forecast_types=['day_ahead', 'intraday', 'actual'], lookback_days=3):
+def incremental_update(forecast_types=['day_ahead', 'intraday', 'actual'], lookback_days=0):
     """
     Perform incremental update for all Italian solar zones.
     
@@ -308,7 +311,9 @@ def incremental_update(forecast_types=['day_ahead', 'intraday', 'actual'], lookb
     print(f"Lookback days: {lookback_days}")
     print("="*60)
     
-    current_date = datetime.now(pytz.UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    # Use UTC timezone for API calls
+    utc = pytz.UTC
+    current_date = datetime.now(utc).replace(hour=0, minute=0, second=0, microsecond=0)
     
     for zone_name, zone_code in ITALY_ZONES.items():
         print(f"\n--- Processing {zone_name} ({zone_code}) ---")
@@ -319,25 +324,30 @@ def incremental_update(forecast_types=['day_ahead', 'intraday', 'actual'], lookb
         if last_date is None:
             # No existing data, start from zone restriction date or 2015
             if zone_name in ZONE_START_DATES:
-                start_date = pd.Timestamp(ZONE_START_DATES[zone_name])
+                start_date = ZONE_START_DATES[zone_name]
             else:
-                start_date = pd.Timestamp(datetime(2015, 1, 1, tzinfo=pytz.UTC))
+                start_date = datetime(2015, 1, 1, tzinfo=utc)
             print(f"  No existing data. Starting from {start_date.date()}")
         else:
             # Start from the day after the last date, minus lookback_days to catch revisions
             # If lookback_days=0, start exactly from the day after last date (no duplicates)
             if lookback_days == 0:
-                start_date = pd.Timestamp(last_date + timedelta(days=1))
+                start_date = datetime.combine(
+                    (last_date + timedelta(days=1)).date(),
+                    datetime.min.time(),
+                    tzinfo=utc
+                )
                 print(f"  Starting from day after last data: {start_date.date()} (no overlap)")
             else:
-                start_date = pd.Timestamp(last_date - timedelta(days=lookback_days - 1))
+                start_date = datetime.combine(
+                    (last_date - timedelta(days=lookback_days - 1)).date(),
+                    datetime.min.time(),
+                    tzinfo=utc
+                )
                 print(f"  Starting from {start_date.date()} (last date - {lookback_days - 1} days for revisions)")
         
-        # Ensure start_date has timezone info
-        if start_date.tz is None:
-            start_date = start_date.tz_localize('UTC')
-        
-        # End date is current time as pandas Timestamp
+        # Convert to pandas Timestamp with UTC timezone
+        start_date = pd.Timestamp(start_date)
         end_date = pd.Timestamp(current_date)
         
         # Skip if we're already up to date (start date is after current date)
@@ -362,9 +372,12 @@ if __name__ == "__main__":
     # IMPORTANT: lookback_days controls overlap behavior:
     # - lookback_days=0: No overlap, starts day after last data (prevents duplicates)
     # - lookback_days=3: Overlaps 3 days to catch data revisions (may update existing data)
+    
+    # Note: intraday forecasts are often not available for historical dates
+    # Only use 'intraday' if you need very recent/current day data
     incremental_update(
-        forecast_types=['day_ahead', 'intraday', 'actual'],
-        lookback_days=1  # No overlap - start exactly after last data to prevent duplicates
+        forecast_types=['day_ahead', 'actual'],  # Removed 'intraday' - causes 400 errors for historical data
+        lookback_days=1  # 1 day lookback to catch any data revisions
     )
     
     print("\nIncremental update completed. Check data/energy/ for updated CSV files.")
