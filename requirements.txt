@@ -1,4 +1,21 @@
+# APIs and Data Retrieval
 entsoe-py
-pandas
 python-dotenv
 requests
+
+# Machine Learning (PyTorch)
+torch>=2.9.0
+torchvision>=0.24.0
+torchaudio>=2.9.0
+
+# Data Processing
+numpy>=1.24.0
+pandas>=2.1.0
+
+# Visualization
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# Utilities
+scikit-learn>=1.3.0
+tqdm>=4.67.0
