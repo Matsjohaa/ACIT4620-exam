@@ -246,3 +246,123 @@ def calculate_metrics(y_true, y_pred):
         'mape': mape,
         'r2': r2
     }
+
+
+class EncoderDecoderCNNLSTM(nn.Module):
+    """
+    Encoder–decoder CNN-LSTM model.
+
+    Encoder:
+        - CNN + LSTM over past weather (168h) -> context vector h_enc.
+
+    Decoder:
+        - For each future hour, take weather features + h_enc
+        - Pass through a small MLP to predict capacity_factor for that hour.
+    """
+
+    def __init__(
+        self,
+        enc_sequence_length: int = 168,
+        dec_sequence_length: int = 336,
+        n_features: int = 15,
+        encoder_hidden: int = 64,
+        decoder_hidden: int = 128,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+
+        self.enc_sequence_length = enc_sequence_length
+        self.dec_sequence_length = dec_sequence_length
+        self.n_features = n_features
+        self.forecast_horizon = dec_sequence_length
+
+        # --- Encoder: CNN + LSTM over past weather ---
+        self.conv1 = nn.Conv1d(n_features, 64, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm1d(64)
+        self.pool1 = nn.MaxPool1d(kernel_size=2)
+
+        self.conv2 = nn.Conv1d(64, 128, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm1d(128)
+        self.pool2 = nn.MaxPool1d(kernel_size=2)
+
+        # after two poolings of size 2: length = enc_sequence_length // 4
+        self.encoder_lstm = nn.LSTM(
+            input_size=128,
+            hidden_size=encoder_hidden,
+            batch_first=True,
+        )
+
+        self.encoder_dropout = nn.Dropout(dropout)
+
+        # --- Decoder: MLP over future weather + context ---
+        # For each future timestep we will concat [weather_t, h_enc]
+        decoder_input_dim = n_features + encoder_hidden
+
+        self.decoder_fc1 = nn.Linear(decoder_input_dim, decoder_hidden)
+        self.decoder_dropout1 = nn.Dropout(dropout)
+        self.decoder_fc2 = nn.Linear(decoder_hidden, decoder_hidden // 2)
+        self.decoder_dropout2 = nn.Dropout(dropout)
+        self.decoder_out = nn.Linear(decoder_hidden // 2, 1)
+
+        self.relu = nn.ReLU()
+
+    def encode(self, x_enc: torch.Tensor) -> torch.Tensor:
+        """
+        x_enc: [batch, enc_T, n_features]
+        returns h_enc: [batch, encoder_hidden]
+        """
+        # CNN expects [batch, channels, time]
+        x = x_enc.transpose(1, 2)  # [B, F, T]
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.pool1(x)
+
+        x = self.conv2(x)
+        x = self.bn2(x)
+        x = self.relu(x)
+        x = self.pool2(x)
+
+        # back to [batch, T', C] for LSTM
+        x = x.transpose(1, 2)
+
+        # LSTM over encoded sequence
+        _, (h_n, _) = self.encoder_lstm(x)   # h_n: [num_layers, B, H]
+        h_enc = h_n[-1]                      # [B, H] last layer
+
+        h_enc = self.encoder_dropout(h_enc)
+        return h_enc
+
+    def forward(self, x_enc: torch.Tensor, x_dec: torch.Tensor) -> torch.Tensor:
+        """
+        x_enc: [batch, enc_T, n_features]
+        x_dec: [batch, dec_T, n_features]
+        returns y_pred: [batch, dec_T]
+        """
+        # 1) encode past weather
+        h_enc = self.encode(x_enc)  # [B, H]
+
+        B, T_dec, F = x_dec.shape
+
+        # 2) repeat context for each future timestep
+        h_rep = h_enc.unsqueeze(1).repeat(1, T_dec, 1)  # [B, T_dec, H]
+
+        # 3) concatenate future weather with context
+        dec_input = torch.cat([x_dec, h_rep], dim=-1)   # [B, T_dec, F+H]
+
+        # 4) apply time-distributed MLP
+        z = self.decoder_fc1(dec_input)
+        z = self.relu(z)
+        z = self.decoder_dropout1(z)
+
+        z = self.decoder_fc2(z)
+        z = self.relu(z)
+        z = self.decoder_dropout2(z)
+
+        z = self.decoder_out(z)      # [B, T_dec, 1]
+        y_pred = z.squeeze(-1)       # [B, T_dec]
+
+        return y_pred
+
+    def count_parameters(self):
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)

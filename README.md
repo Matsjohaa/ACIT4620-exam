@@ -14,6 +14,9 @@ python src/train.py --zones IT-NORD --epochs 5 --batch-size 16 --sample 0.1
 # Full training (all zones, 2-4 hours)
 python src/train.py --epochs 50 --batch-size 32
 
+# Model evaluation (simple vs encoder, residual mode)
+python src/evaluate_compare_models.py
+
 # Evaluate on test period (Oct 27 - Nov 10, 2025)
 python src/predict.py
 ```
@@ -31,15 +34,17 @@ python src/predict.py
 ✅ **Training: Historic weather** (ERA5, 5-day lag)  
 ✅ **Testing: Weather forecast** (14-day prediction)  
 ✅ **Data leakage fixed** (14 features: weather + hour only)
+✅ **Optional residual learning** (capacity factor – day-ahead forecast)
 
 ## Project Structure
 
 ```
 ├── src/
-│   ├── train.py          # PyTorch training
-│   ├── predict.py        # Model evaluation
-│   ├── model.py          # CNN-LSTM architecture
-│   └── data_loader.py    # Data utilities
+│   ├── train.py                          # PyTorch training
+│   ├── predict.py                        # Model evaluation
+│   ├── model.py                          # CNN-LSTM architecture
+    ├── evaluate_compare_models.py        # Compare simple vs encoder vs day-ahead
+│   └── data_loader.py                    # Data utilities
 ├── data/
 │   ├── processed/train/  # Training data (2015 - Oct 26)
 │   └── processed/test/   # Test data (Oct 27 - Nov 10)
@@ -60,6 +65,13 @@ python src/predict.py
 - Conv1D layers for spatial feature extraction
 - LSTM layers for temporal dependencies
 - Dense layers for 14-day forecast output
+
+**EncoderDecoderCNNLSTM** (extended model):
+- Encoder: CNN + LSTM over past 168 hours of weather
+- Decoder: Forecasted weather for the next 336 hours
+- Supports residual learning (target = CF − day-ahead CF)
+- Allows weather-aware 14-day forecasting
+
 
 ## Expected Results
 
