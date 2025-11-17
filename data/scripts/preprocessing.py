@@ -41,7 +41,7 @@ def load_energy_data(zone, data_dir='data/raw/energy'):
         raise FileNotFoundError(f"Energy file not found: {energy_file}")
     
     df = pd.read_csv(energy_file)
-    df['date'] = pd.to_datetime(df['date'], utc=True)
+    df['date'] = pd.to_datetime(df['date'])  # Keep as timezone-naive local time
     
     # Check if data has 15-minute intervals (>24 records per day)
     # Count records for a sample date after Jan 1, 2025
@@ -94,9 +94,7 @@ def load_weather_historic(zone, data_dir='data/raw/weather/historic'):
         # Fallback if datetime doesn't exist
         df['date'] = pd.to_datetime(df['date'])
     
-    # Convert to UTC to match energy data
-    if df['date'].dt.tz is None:
-        df['date'] = df['date'].dt.tz_localize('UTC')
+    # Keep as timezone-naive local time (energy data is also in local time now)
     
     df['zone'] = zone
     
@@ -150,6 +148,7 @@ def calculate_capacity_factor(df):
 def merge_energy_weather(energy_df, weather_df):
     """
     Merge energy and weather data by timestamp.
+    Both dataframes are already in Europe/Rome local time (timezone-naive).
     
     Args:
         energy_df: DataFrame with energy data
@@ -158,20 +157,10 @@ def merge_energy_weather(energy_df, weather_df):
     Returns:
         Merged DataFrame
     """
-    # Ensure both dataframes have timezone-aware UTC timestamps
-    if energy_df['date'].dt.tz is None:
-        energy_df = energy_df.copy()
-        energy_df['date'] = energy_df['date'].dt.tz_localize('UTC')
-    elif str(energy_df['date'].dt.tz) != 'UTC':
-        energy_df = energy_df.copy()
-        energy_df['date'] = energy_df['date'].dt.tz_convert('UTC')
-    
-    if weather_df['date'].dt.tz is None:
-        weather_df = weather_df.copy()
-        weather_df['date'] = weather_df['date'].dt.tz_localize('UTC')
-    elif str(weather_df['date'].dt.tz) != 'UTC':
-        weather_df = weather_df.copy()
-        weather_df['date'] = weather_df['date'].dt.tz_convert('UTC')
+    # Both dataframes are already in local time (timezone-naive)
+    # No timezone conversion needed - just merge directly
+    energy_df = energy_df.copy()
+    weather_df = weather_df.copy()
     
     # Merge on date
     merged = energy_df.merge(weather_df, on='date', how='inner', suffixes=('', '_weather'))
@@ -379,8 +368,8 @@ def create_train_test_split(df, train_end_date='2025-10-26', zone='IT-NORD', bas
     print(f"\nCreating train/test split for {zone} (train_end_date: {train_end_date})...")
     
     # Training set: Use the processed data with historic weather
-    df['date'] = pd.to_datetime(df['date'], utc=True)
-    train_end = pd.to_datetime(train_end_date, utc=True)
+    df['date'] = pd.to_datetime(df['date'])  # Keep as timezone-naive local time
+    train_end = pd.to_datetime(train_end_date)
     train_df = df[df['date'] <= train_end].copy()
     
     print(f"  Training set: {len(train_df):,} records ({train_df['date'].min().date()} to {train_df['date'].max().date()})")
@@ -416,13 +405,12 @@ def create_train_test_split(df, train_end_date='2025-10-26', zone='IT-NORD', bas
     else:
         weather_forecast['date'] = pd.to_datetime(weather_forecast['date'])
     
-    if weather_forecast['date'].dt.tz is None:
-        weather_forecast['date'] = weather_forecast['date'].dt.tz_localize('UTC')
+    # Keep as timezone-naive local time (no UTC conversion)
     
     # Load energy data for test period
     energy_file = f'data/raw/energy/{zone_clean}_solar.csv'
     energy_df = pd.read_csv(energy_file)
-    energy_df['date'] = pd.to_datetime(energy_df['date'], utc=True)
+    energy_df['date'] = pd.to_datetime(energy_df['date'])  # Keep as timezone-naive local time
     
     # Filter energy to test period
     test_start = train_end + pd.Timedelta(days=1)
@@ -439,12 +427,13 @@ def create_train_test_split(df, train_end_date='2025-10-26', zone='IT-NORD', bas
         if records_per_day > 24:
             energy_test = energy_test.set_index('date').resample('1H').agg({
                 'actual': 'mean',
+                'day-ahead': 'mean',  # Include day-ahead forecast
                 'installed_capacity_mw': 'first'
             }).reset_index()
             energy_test = energy_test[energy_test['actual'].notna()]  # Remove any NaN from resampling
     
-    # Merge energy + weather FORECAST
-    test_df = pd.merge(energy_test[['date', 'actual', 'installed_capacity_mw']], 
+    # Merge energy + weather FORECAST (include day-ahead column)
+    test_df = pd.merge(energy_test[['date', 'actual', 'day-ahead', 'installed_capacity_mw']], 
                        weather_forecast, 
                        on='date', 
                        how='inner')
