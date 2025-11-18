@@ -7,9 +7,10 @@ This directory contains the implementation of the CNN-LSTM hybrid model for 14-d
 ```
 src/
 ├── data_loader.py      # Data loading and sequence preparation
-├── model.py            # CNN-LSTM model architecture
+├── evaluate_compare_models.py  # Offline evaluation & plots (simple vs encoder vs day-ahead)
 ├── train.py            # Training pipeline
 ├── predict.py          # Prediction and evaluation
+├── model.py            # CNN-LSTM model architecture 
 └── features.py         # Feature engineering (optional)
 ```
 
@@ -28,6 +29,17 @@ The model follows the hybrid approach from literature (Salman et al., 2024):
 3. **Dense Layers**: Generate 14-day forecast
    - Dense layers (256, 128 units)
    - Output layer: 336 values (14 days × 24 hours)
+   
+### Extended encoder–decoder variant
+
+In addition to the baseline CNN-LSTM, the project includes an encoder–decoder model:
+
+- Encoder: CNN + LSTM over the past 168 hours of weather.
+- Decoder: MLP applied to each timestep of the next 336 hours of weather forecast,
+  conditioned on the encoder hidden state.
+- Target: either raw capacity factor or residual (capacity_factor − day-ahead CF).
+
+This is selected with `--model-type encoder` in `train.py`.
 
 ## Training Configuration
 
@@ -59,7 +71,7 @@ From OpenMeteo weather forecasts:
 ### 1. Install Dependencies
 
 ```bash
-pip install tensorflow numpy pandas matplotlib scikit-learn
+pip install torch numpy pandas matplotlib scikit-learn tqdm
 ```
 
 ### 2. Train Model
@@ -80,8 +92,9 @@ Options:
 - `--forecast-horizon`: Output window in hours (default: 336 = 14 days)
 - `--batch-size`: Batch size (default: 32)
 - `--epochs`: Maximum epochs (default: 100)
-- `--model-type`: 'full' or 'simple' (default: full)
+- `--model-type`: 'full' , 'encoder' or 'simple' (default: full)
 - `--model-path`: Model save directory (default: models/)
+- `--residual`: train on residual (CF − day-ahead CF) instead of raw CF
 
 ### 3. Evaluate Model
 
@@ -99,8 +112,8 @@ This will:
 ## Output Files
 
 ### Training
-- `models/best_model_full.keras` - Trained model
-- `models/normalization_params.npz` - Feature normalization parameters
+- `models/best_model_pytorch.pt` - Trained model
+- `normalization_params_pytorch.npz` - Feature normalization parameters
 - `models/training_history_full.json` - Training metrics per epoch
 - `models/training_history_full.png` - Training curves visualization
 
@@ -139,8 +152,8 @@ This will:
 - **Zones**: 7 Italian bidding zones
 - **Period**: 2015 - Oct 26, 2025 (up to 10.7 years)
 - **Samples**: ~94,000 sequences per zone (with sliding window)
-- **Features**: Weather forecast + capacity factor + hour
-- **Target**: Capacity factor (actual generation / installed capacity)
+- **Features**: 13 weather parameters + 2 engineered features (solar_potential, clear_sky_factor)
+- **Target**: capacity_factor or residual (capacity_factor − day-ahead capacity_factor)
 
 ## Test Data
 
@@ -160,6 +173,9 @@ This will:
 4. **7-Day Input Window**: Provides sufficient context for weekly patterns and trends
 
 5. **14-Day Output Horizon**: Extends traditional day-ahead to two-week planning window
+6. **Residual learning**: the model can be trained to predict the deviation from the day-ahead
+   market forecast, which simplifies the learning problem and focuses on weather-driven errors.
+
 
 ## Expected Performance
 

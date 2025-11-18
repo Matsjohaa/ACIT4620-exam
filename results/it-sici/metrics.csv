@@ -1,0 +1,16 @@
+Metric,Value
+Mean Absolute Error (MAE),26.35 MW
+Root Mean Square Error (RMSE),56.32 MW
+R² Score,0.9417
+Mean Error (Bias),-8.21 MW
+Median Absolute Error,0.00 MW
+Max Absolute Error,264.94 MW
+Min Absolute Error,0.00 MW
+Std Dev of Errors,55.72 MW
+Mean Percentage Error,55.57%
+Mean Absolute Percentage Error (MAPE),67.84%
+Number of Samples,336
+Actual Mean,160.52 MW
+Actual Std Dev,233.34 MW
+Predicted Mean,152.30 MW
+Predicted Std Dev,224.87 MW
