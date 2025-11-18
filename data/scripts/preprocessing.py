@@ -435,20 +435,24 @@ def create_train_test_split(df, train_end_date='2025-10-26', zone='IT-NORD', bas
     if len(energy_test) > 0:
         sample_date = energy_test.iloc[min(10, len(energy_test)-1)]['date'].date()
         records_per_day = len(energy_test[energy_test['date'].dt.date == sample_date])
-        
+
         if records_per_day > 24:
             energy_test = energy_test.set_index('date').resample('1H').agg({
                 'actual': 'mean',
+                'day-ahead': 'mean',
+                'intraday': 'mean',
                 'installed_capacity_mw': 'first'
             }).reset_index()
-            energy_test = energy_test[energy_test['actual'].notna()]  # Remove any NaN from resampling
-    
+            energy_test = energy_test[energy_test['actual'].notna()]
+
     # Merge energy + weather FORECAST
-    test_df = pd.merge(energy_test[['date', 'actual', 'installed_capacity_mw']], 
-                       weather_forecast, 
-                       on='date', 
-                       how='inner')
-    
+    test_df = pd.merge(
+        energy_test[['date', 'actual', 'day-ahead', 'intraday', 'installed_capacity_mw']],
+        weather_forecast,
+        on='date',
+        how='inner'
+    )
+
     if len(test_df) == 0:
         print(f"  ⚠ No matching dates between energy and weather forecast")
         print(f"    Energy: {energy_test['date'].min()} to {energy_test['date'].max()}")
