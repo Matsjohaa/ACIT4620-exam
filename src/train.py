@@ -85,7 +85,7 @@ def train_model(
     sample_frac: Optional[float] = None,
     model_type: str = "simple",
     use_residual: bool = False,
-) -> None:
+) -> str:
     """
     Train CNN-LSTM model using PyTorch.
 
@@ -173,8 +173,15 @@ def train_model(
     # ------------------------------------------------------------------
     print("\n3. Normalizing data...")
 
-    models_dir = Path("models")
-    models_dir.mkdir(exist_ok=True)
+    # Determine zone name for folder structure
+    if zones and len(zones) == 1:
+        zone_name = zones[0].lower()
+    else:
+        zone_name = "multi-zone"
+    
+    models_dir = Path("models") / zone_name
+    models_dir.mkdir(exist_ok=True, parents=True)
+    print(f"   Using models directory: {models_dir}")
 
     if use_encoder_decoder:
         if len(all_X_enc) == 0:
@@ -205,8 +212,9 @@ def train_model(
         X_dec_norm = X_all_norm[:, sequence_length:, :]
 
         # Save normalization params
-        np.savez(models_dir / "normalization_params_pytorch.npz", **norm_params)
-        print(f"   Saved normalization parameters")
+        norm_filename = "norm.npz"
+        np.savez(models_dir / norm_filename, **norm_params)
+        print(f"   Saved normalization parameters to {models_dir / norm_filename}")
 
         # Train/val split
         print("\n4. Splitting train/validation...")
@@ -256,8 +264,9 @@ def train_model(
         print(f"   Target shape: {y.shape} (samples, forecast_horizon)")
 
         X_norm, _, norm_params = normalize_data(X)
-        np.savez(models_dir / "normalization_params_pytorch.npz", **norm_params)
-        print(f"   Saved normalization parameters")
+        norm_filename = "norm.npz"
+        np.savez(models_dir / norm_filename, **norm_params)
+        print(f"   Saved normalization parameters to {models_dir / norm_filename}")
 
         print("\n4. Splitting train/validation...")
         n_val = int(len(X_norm) * validation_split)
@@ -418,6 +427,7 @@ def train_model(
         # Save best model
         if val_loss < best_val_loss:
             best_val_loss = val_loss
+            model_filename = "model.pt"
             torch.save(
                 {
                     "epoch": epoch,
@@ -426,9 +436,9 @@ def train_model(
                     "val_loss": val_loss,
                     "val_mae": val_mae,
                 },
-                models_dir / "best_model_pytorch.pt",
+                models_dir / model_filename,
             )
-            print(f"  ✓ Saved best model (val_loss: {val_loss:.5f})")
+            print(f"  ✓ Saved best model to {models_dir / model_filename} (val_loss: {val_loss:.5f})")
 
         scheduler.step(val_loss)
 
@@ -437,43 +447,66 @@ def train_model(
     # ------------------------------------------------------------------
     print("\n7. Saving results...")
 
-    history_file = models_dir / "training_history_pytorch.json"
+    history_file = models_dir / "training_history.json"
     with open(history_file, "w") as f:
         json.dump(history, f, indent=2)
-    print("   Saved training history")
+    print(f"   Saved training history to {history_file}")
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 4))
 
-    axes[0].plot(history["train_loss"], label="Train")
-    axes[0].plot(history["val_loss"], label="Validation")
-    axes[0].set_xlabel("Epoch")
-    axes[0].set_ylabel("Loss (MSE)")
-    axes[0].set_title("Training Loss")
-    axes[0].legend()
+    # Loss plot
+    axes[0].plot(history["train_loss"], label="Train", linewidth=2, marker='o', markersize=4)
+    axes[0].plot(history["val_loss"], label="Validation", linewidth=2, marker='s', markersize=4)
+    axes[0].set_xlabel("Epoch", fontsize=11)
+    axes[0].set_ylabel("Loss (MSE)", fontsize=11)
+    axes[0].set_title("Training Loss", fontsize=12, fontweight="bold")
+    axes[0].legend(fontsize=10)
     axes[0].grid(True, alpha=0.3)
+    
+    # Add overfitting indicator
+    train_val_gap = history["val_loss"][-1] - history["train_loss"][-1]
+    if train_val_gap > 0.1:
+        axes[0].text(0.5, 0.95, "⚠️ Possible Overfitting", 
+                    transform=axes[0].transAxes, fontsize=10, 
+                    ha='center', va='top', color='red', fontweight='bold')
+    elif abs(train_val_gap) < 0.01:
+        axes[0].text(0.5, 0.95, "✓ Good Fit", 
+                    transform=axes[0].transAxes, fontsize=10, 
+                    ha='center', va='top', color='green', fontweight='bold')
 
-    axes[1].plot(history["train_mae"], label="Train")
-    axes[1].plot(history["val_mae"], label="Validation")
-    axes[1].set_xlabel("Epoch")
-    axes[1].set_ylabel("MAE")
-    axes[1].set_title("Mean Absolute Error")
-    axes[1].legend()
+    # MAE plot
+    axes[1].plot(history["train_mae"], label="Train", linewidth=2, marker='o', markersize=4)
+    axes[1].plot(history["val_mae"], label="Validation", linewidth=2, marker='s', markersize=4)
+    axes[1].set_xlabel("Epoch", fontsize=11)
+    axes[1].set_ylabel("MAE", fontsize=11)
+    axes[1].set_title("Mean Absolute Error", fontsize=12, fontweight="bold")
+    axes[1].legend(fontsize=10)
     axes[1].grid(True, alpha=0.3)
+    
+    # Add best epoch marker
+    best_epoch = np.argmin(history["val_mae"])
+    axes[1].axvline(best_epoch, color='red', linestyle='--', alpha=0.5, linewidth=1)
+    axes[1].text(best_epoch, axes[1].get_ylim()[1]*0.95, f'Best: Epoch {best_epoch+1}',
+                ha='center', fontsize=9, color='red')
 
     plt.tight_layout()
-    plot_file = models_dir / "training_curves_pytorch.png"
+    plot_file = models_dir / "training_curves.png"
     plt.savefig(plot_file, dpi=150, bbox_inches="tight")
     plt.close()
-    print("   Saved training curves")
+    print(f"   Saved training curves to {plot_file}")
 
     # Summary
     print("\n" + "=" * 80)
     print("TRAINING COMPLETE")
     print("=" * 80)
+    print(f"Zone: {zone_name.upper()}")
     print(f"Best validation loss: {best_val_loss:.5f}")
     print(f"Best validation MAE: {min(history['val_mae']):.5f}")
-    print(f"Model saved to: {models_dir / 'best_model_pytorch.pt'}")
+    print(f"Model saved to: {models_dir / 'model.pt'}")
+    print(f"Normalization saved to: {models_dir / 'norm.npz'}")
     print("=" * 80 + "\n")
+    
+    return zone_name
 
 
 if __name__ == "__main__":

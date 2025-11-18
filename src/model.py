@@ -250,14 +250,14 @@ def calculate_metrics(y_true, y_pred):
 
 class EncoderDecoderCNNLSTM(nn.Module):
     """
-    Encoder–decoder CNN-LSTM model.
+    IMPROVED Encoder–decoder CNN-LSTM model with enhanced decoder capacity.
 
     Encoder:
         - CNN + LSTM over past weather (168h) -> context vector h_enc.
 
     Decoder:
         - For each future hour, take weather features + h_enc
-        - Pass through a small MLP to predict capacity_factor for that hour.
+        - Pass through a DEEPER MLP with batch normalization to predict capacity_factor.
     """
 
     def __init__(
@@ -265,9 +265,9 @@ class EncoderDecoderCNNLSTM(nn.Module):
         enc_sequence_length: int = 168,
         dec_sequence_length: int = 336,
         n_features: int = 15,
-        encoder_hidden: int = 64,
-        decoder_hidden: int = 128,
-        dropout: float = 0.1,
+        encoder_hidden: int = 128,  # Increased from 64
+        decoder_hidden: int = 256,  # Increased from 128
+        dropout: float = 0.15,  # Slightly increased
     ):
         super().__init__()
 
@@ -294,17 +294,27 @@ class EncoderDecoderCNNLSTM(nn.Module):
 
         self.encoder_dropout = nn.Dropout(dropout)
 
-        # --- Decoder: MLP over future weather + context ---
+        # --- Decoder: ENHANCED MLP over future weather + context ---
         # For each future timestep we will concat [weather_t, h_enc]
         decoder_input_dim = n_features + encoder_hidden
 
+        # IMPROVED: Deeper decoder with batch normalization
         self.decoder_fc1 = nn.Linear(decoder_input_dim, decoder_hidden)
+        self.decoder_bn1 = nn.BatchNorm1d(dec_sequence_length)  # Batch norm over time
         self.decoder_dropout1 = nn.Dropout(dropout)
+        
         self.decoder_fc2 = nn.Linear(decoder_hidden, decoder_hidden // 2)
+        self.decoder_bn2 = nn.BatchNorm1d(dec_sequence_length)
         self.decoder_dropout2 = nn.Dropout(dropout)
-        self.decoder_out = nn.Linear(decoder_hidden // 2, 1)
+        
+        self.decoder_fc3 = nn.Linear(decoder_hidden // 2, decoder_hidden // 4)  # NEW layer
+        self.decoder_bn3 = nn.BatchNorm1d(dec_sequence_length)
+        self.decoder_dropout3 = nn.Dropout(dropout)
+        
+        self.decoder_out = nn.Linear(decoder_hidden // 4, 1)
 
         self.relu = nn.ReLU()
+        self.leaky_relu = nn.LeakyReLU(0.1)
 
     def encode(self, x_enc: torch.Tensor) -> torch.Tensor:
         """
@@ -350,14 +360,21 @@ class EncoderDecoderCNNLSTM(nn.Module):
         # 3) concatenate future weather with context
         dec_input = torch.cat([x_dec, h_rep], dim=-1)   # [B, T_dec, F+H]
 
-        # 4) apply time-distributed MLP
+        # 4) apply IMPROVED time-distributed MLP with batch norm
         z = self.decoder_fc1(dec_input)
-        z = self.relu(z)
+        z = self.decoder_bn1(z)  # Batch norm
+        z = self.leaky_relu(z)   # LeakyReLU for better gradients
         z = self.decoder_dropout1(z)
 
         z = self.decoder_fc2(z)
-        z = self.relu(z)
+        z = self.decoder_bn2(z)
+        z = self.leaky_relu(z)
         z = self.decoder_dropout2(z)
+
+        z = self.decoder_fc3(z)  # NEW layer
+        z = self.decoder_bn3(z)
+        z = self.leaky_relu(z)
+        z = self.decoder_dropout3(z)
 
         z = self.decoder_out(z)      # [B, T_dec, 1]
         y_pred = z.squeeze(-1)       # [B, T_dec]
