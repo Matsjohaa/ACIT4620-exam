@@ -28,8 +28,6 @@ from data_loader import (  # type: ignore
 )
 
 from model import (  # type: ignore
-    CNNLSTM,
-    SimpleCNNLSTM,
     EncoderDecoderCNNLSTM,
     get_device,
     print_model_summary,
@@ -83,11 +81,10 @@ def train_model(
     validation_split: float = 0.2,
     learning_rate: float = 0.001,
     sample_frac: Optional[float] = None,
-    model_type: str = "simple",
     use_residual: bool = False,
 ) -> str:
     """
-    Train CNN-LSTM model using PyTorch.
+    Train EncoderDecoderCNNLSTM model using PyTorch.
 
     Args:
         zones: List of zone names (None = all zones).
@@ -98,7 +95,6 @@ def train_model(
         validation_split: Fraction of data for validation.
         learning_rate: Learning rate for optimizer.
         sample_frac: Fraction of data to use (for testing, e.g., 0.1 = 10%).
-        model_type: 'simple', 'full', or 'encoder'.
         use_residual: If True, train on residual (cf - day_ahead_cf).
     """
 
@@ -124,10 +120,7 @@ def train_model(
     # 2. Prepare sequences
     # ------------------------------------------------------------------
     print("\n2. Preparing sequences...")
-    use_encoder_decoder: bool = model_type == "encoder"
 
-    all_X: List[np.ndarray] = []
-    all_y: List[np.ndarray] = []
     all_X_enc: List[np.ndarray] = []
     all_X_dec: List[np.ndarray] = []
     all_y_encdec: List[np.ndarray] = []
@@ -141,32 +134,18 @@ def train_model(
             df = df.iloc[:n_samples]
             print(f"   - Using sample fraction {sample_frac}, {len(df)} records")
 
-        if use_encoder_decoder:
-            X_enc_zone, X_dec_zone, y_zone = prepare_sequences_with_future(
-                df,
-                sequence_length=sequence_length,
-                forecast_horizon=forecast_horizon,
-                use_residual=use_residual,
-            )
-            print(f"   - Created {len(X_enc_zone)} encoder–decoder sequences")
+        X_enc_zone, X_dec_zone, y_zone = prepare_sequences_with_future(
+            df,
+            sequence_length=sequence_length,
+            forecast_horizon=forecast_horizon,
+            use_residual=use_residual,
+        )
+        print(f"   - Created {len(X_enc_zone)} encoder–decoder sequences")
 
-            if X_enc_zone.size > 0:
-                all_X_enc.append(X_enc_zone)
-                all_X_dec.append(X_dec_zone)
-                all_y_encdec.append(y_zone)
-
-        else:
-            X_zone, y_zone = prepare_sequences(
-                df,
-                sequence_length=sequence_length,
-                forecast_horizon=forecast_horizon,
-                use_residual=use_residual,
-            )
-            print(f"   - Created {len(X_zone)} sequences")
-
-            if X_zone.size > 0:
-                all_X.append(X_zone)
-                all_y.append(y_zone)
+        if X_enc_zone.size > 0:
+            all_X_enc.append(X_enc_zone)
+            all_X_dec.append(X_dec_zone)
+            all_y_encdec.append(y_zone)
 
     # ------------------------------------------------------------------
     # 3. Combine + normalize
@@ -183,143 +162,86 @@ def train_model(
     models_dir.mkdir(exist_ok=True, parents=True)
     print(f"   Using models directory: {models_dir}")
 
-    if use_encoder_decoder:
-        if len(all_X_enc) == 0:
-            raise ValueError(
-                "No encoder–decoder sequences were created.\n"
-                "Possible causes:\n"
-                "  - zones filter left you with 0 soner (sjekk --zones argument)\n"
-                "  - after residual calculation there are NaNs in 'capacity_factor' "
-                "or 'day-ahead' / 'installed_capacity_mw', so all windows were filtered ut.\n"
-                "  - df is too short for sequence_length + forecast_horizon."
-            )
-
-        X_enc = np.concatenate(all_X_enc, axis=0)
-        X_dec = np.concatenate(all_X_dec, axis=0)
-        y = np.concatenate(all_y_encdec, axis=0)
-
-        print(f"\n   Total sequences: {len(X_enc)}")
-        print(f"   Encoder input shape: {X_enc.shape}")
-        print(f"   Decoder input shape: {X_dec.shape}")
-        print(f"   Target shape: {y.shape}")
-
-        # Normalize encoder + decoder together along the time axis
-        X_all = np.concatenate([X_enc, X_dec], axis=1)  # [N, 168+336, F]
-        X_all_norm, _, norm_params = normalize_data(X_all)
-
-        # Split back to enc/dec parts
-        X_enc_norm = X_all_norm[:, :sequence_length, :]
-        X_dec_norm = X_all_norm[:, sequence_length:, :]
-
-        # Save normalization params
-        norm_filename = "norm.npz"
-        np.savez(models_dir / norm_filename, **norm_params)
-        print(f"   Saved normalization parameters to {models_dir / norm_filename}")
-
-        # Train/val split
-        print("\n4. Splitting train/validation...")
-        n_val = int(len(X_enc_norm) * validation_split)
-        n_train = len(X_enc_norm) - n_val
-
-        X_enc_train, X_enc_val = X_enc_norm[:n_train], X_enc_norm[n_train:]
-        X_dec_train, X_dec_val = X_dec_norm[:n_train], X_dec_norm[n_train:]
-        y_train, y_val = y[:n_train], y[n_train:]
-
-        print(f"   Train: {len(X_enc_train)} sequences")
-        print(f"   Validation: {len(X_enc_val)} sequences")
-
-        # Tensors (stay on CPU; moved to device in loop)
-        X_enc_train_tensor = torch.FloatTensor(X_enc_train)
-        X_dec_train_tensor = torch.FloatTensor(X_dec_train)
-        y_train_tensor = torch.FloatTensor(y_train)
-
-        X_enc_val_tensor = torch.FloatTensor(X_enc_val)
-        X_dec_val_tensor = torch.FloatTensor(X_dec_val)
-        y_val_tensor = torch.FloatTensor(y_val)
-
-        # Datasets / loaders
-        train_dataset = TensorDataset(
-            X_enc_train_tensor, X_dec_train_tensor, y_train_tensor
-        )
-        val_dataset = TensorDataset(
-            X_enc_val_tensor, X_dec_val_tensor, y_val_tensor
+    if len(all_X_enc) == 0:
+        raise ValueError(
+            "No encoder–decoder sequences were created.\n"
+            "Possible causes:\n"
+            "  - zones filter left you with 0 zones (check --zones argument)\n"
+            "  - after residual calculation there are NaNs in 'capacity_factor' "
+            "or 'day-ahead' / 'installed_capacity_mw', so all windows were filtered out.\n"
+            "  - df is too short for sequence_length + forecast_horizon."
         )
 
-        train_loader: DataLoader = DataLoader(
-            train_dataset, batch_size=batch_size, shuffle=True
-        )
-        val_loader: DataLoader = DataLoader(
-            val_dataset, batch_size=batch_size, shuffle=False
-        )
+    X_enc = np.concatenate(all_X_enc, axis=0)
+    X_dec = np.concatenate(all_X_dec, axis=0)
+    y = np.concatenate(all_y_encdec, axis=0)
 
-        n_features = X_enc_train.shape[2]
+    print(f"\n   Total sequences: {len(X_enc)}")
+    print(f"   Encoder input shape: {X_enc.shape}")
+    print(f"   Decoder input shape: {X_dec.shape}")
+    print(f"   Target shape: {y.shape}")
 
-    else:
-        # Old single-input path
-        X = np.concatenate(all_X, axis=0)
-        y = np.concatenate(all_y, axis=0)
+    # Normalize encoder + decoder together along the time axis
+    X_all = np.concatenate([X_enc, X_dec], axis=1)  # [N, 168+336, F]
+    X_all_norm, _, norm_params = normalize_data(X_all)
 
-        print(f"\n   Total sequences: {len(X)}")
-        print(f"   Input shape: {X.shape} (samples, timesteps, features)")
-        print(f"   Target shape: {y.shape} (samples, forecast_horizon)")
+    # Split back to enc/dec parts
+    X_enc_norm = X_all_norm[:, :sequence_length, :]
+    X_dec_norm = X_all_norm[:, sequence_length:, :]
 
-        X_norm, _, norm_params = normalize_data(X)
-        norm_filename = "norm.npz"
-        np.savez(models_dir / norm_filename, **norm_params)
-        print(f"   Saved normalization parameters to {models_dir / norm_filename}")
+    # Save normalization params
+    norm_filename = "norm.npz"
+    np.savez(models_dir / norm_filename, **norm_params)
+    print(f"   Saved normalization parameters to {models_dir / norm_filename}")
 
-        print("\n4. Splitting train/validation...")
-        n_val = int(len(X_norm) * validation_split)
-        n_train = len(X_norm) - n_val
+    # Train/val split
+    print("\n4. Splitting train/validation...")
+    n_val = int(len(X_enc_norm) * validation_split)
+    n_train = len(X_enc_norm) - n_val
 
-        X_train, X_val = X_norm[:n_train], X_norm[n_train:]
-        y_train, y_val = y[:n_train], y[n_train:]
+    X_enc_train, X_enc_val = X_enc_norm[:n_train], X_enc_norm[n_train:]
+    X_dec_train, X_dec_val = X_dec_norm[:n_train], X_dec_norm[n_train:]
+    y_train, y_val = y[:n_train], y[n_train:]
 
-        print(f"   Train: {len(X_train)} sequences")
-        print(f"   Validation: {len(X_val)} sequences")
+    print(f"   Train: {len(X_enc_train)} sequences")
+    print(f"   Validation: {len(X_enc_val)} sequences")
 
-        X_train_tensor = torch.FloatTensor(X_train)
-        y_train_tensor = torch.FloatTensor(y_train)
-        X_val_tensor = torch.FloatTensor(X_val)
-        y_val_tensor = torch.FloatTensor(y_val)
+    # Tensors (stay on CPU; moved to device in loop)
+    X_enc_train_tensor = torch.FloatTensor(X_enc_train)
+    X_dec_train_tensor = torch.FloatTensor(X_dec_train)
+    y_train_tensor = torch.FloatTensor(y_train)
 
-        train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
-        val_dataset = TensorDataset(X_val_tensor, y_val_tensor)
+    X_enc_val_tensor = torch.FloatTensor(X_enc_val)
+    X_dec_val_tensor = torch.FloatTensor(X_dec_val)
+    y_val_tensor = torch.FloatTensor(y_val)
 
-        train_loader = DataLoader(
-            train_dataset, batch_size=batch_size, shuffle=True
-        )
-        val_loader = DataLoader(
-            val_dataset, batch_size=batch_size, shuffle=False
-        )
+    # Datasets / loaders
+    train_dataset = TensorDataset(
+        X_enc_train_tensor, X_dec_train_tensor, y_train_tensor
+    )
+    val_dataset = TensorDataset(
+        X_enc_val_tensor, X_dec_val_tensor, y_val_tensor
+    )
 
-        n_features = X_train.shape[2]
+    train_loader: DataLoader = DataLoader(
+        train_dataset, batch_size=batch_size, shuffle=True
+    )
+    val_loader: DataLoader = DataLoader(
+        val_dataset, batch_size=batch_size, shuffle=False
+    )
+
+    n_features = X_enc_train.shape[2]
 
     # ------------------------------------------------------------------
     # 5. Build model
     # ------------------------------------------------------------------
     print("\n5. Building model...")
 
-    if model_type == "simple":
-        model: nn.Module = SimpleCNNLSTM(
-            sequence_length=sequence_length,
-            n_features=n_features,
-            forecast_horizon=forecast_horizon,
-        ).to(device)
-    elif model_type == "full":
-        model = CNNLSTM(
-            sequence_length=sequence_length,
-            n_features=n_features,
-            forecast_horizon=forecast_horizon,
-        ).to(device)
-    elif model_type == "encoder":
-        model = EncoderDecoderCNNLSTM(
-            enc_sequence_length=sequence_length,
-            dec_sequence_length=forecast_horizon,
-            n_features=n_features,
-        ).to(device)
-    else:
-        raise ValueError(f"Unknown model_type: {model_type}")
+    model: nn.Module = EncoderDecoderCNNLSTM(
+        enc_sequence_length=sequence_length,
+        dec_sequence_length=forecast_horizon,
+        n_features=n_features,
+    ).to(device)
 
     print_model_summary(model, sequence_length, n_features)
 
@@ -354,19 +276,12 @@ def train_model(
         for batch in train_pbar:
             optimizer.zero_grad()
 
-            if use_encoder_decoder:
-                X_enc_batch, X_dec_batch, y_batch = batch
-                X_enc_batch = X_enc_batch.to(device)
-                X_dec_batch = X_dec_batch.to(device)
-                y_batch = y_batch.to(device)
+            X_enc_batch, X_dec_batch, y_batch = batch
+            X_enc_batch = X_enc_batch.to(device)
+            X_dec_batch = X_dec_batch.to(device)
+            y_batch = y_batch.to(device)
 
-                y_pred = model(X_enc_batch, X_dec_batch)
-            else:
-                X_batch, y_batch = batch
-                X_batch = X_batch.to(device)
-                y_batch = y_batch.to(device)
-
-                y_pred = model(X_batch)
+            y_pred = model(X_enc_batch, X_dec_batch)
 
             loss = criterion(y_pred, y_batch)
             loss.backward()
@@ -388,19 +303,12 @@ def train_model(
         with torch.no_grad():
             val_pbar = tqdm(val_loader, desc=f"Epoch {epoch+1}/{epochs} [Val]")
             for batch in val_pbar:
-                if use_encoder_decoder:
-                    X_enc_batch, X_dec_batch, y_batch = batch
-                    X_enc_batch = X_enc_batch.to(device)
-                    X_dec_batch = X_dec_batch.to(device)
-                    y_batch = y_batch.to(device)
+                X_enc_batch, X_dec_batch, y_batch = batch
+                X_enc_batch = X_enc_batch.to(device)
+                X_dec_batch = X_dec_batch.to(device)
+                y_batch = y_batch.to(device)
 
-                    y_pred = model(X_enc_batch, X_dec_batch)
-                else:
-                    X_batch, y_batch = batch
-                    X_batch = X_batch.to(device)
-                    y_batch = y_batch.to(device)
-
-                    y_pred = model(X_batch)
+                y_pred = model(X_enc_batch, X_dec_batch)
 
                 loss = criterion(y_pred, y_batch)
                 val_loss += loss.item()
@@ -533,14 +441,7 @@ if __name__ == "__main__":
         "--sample",
         type=float,
         default=None,
-        help="Sample fraction (e.g., 0.1 for 10%)",
-    )
-    parser.add_argument(
-        "--model-type",
-        type=str,
-        default="simple",
-        choices=["simple", "full", "encoder"],
-        help="Model architecture (default: simple)",
+        help="Sample fraction: e.g. 0.1 for 10%%",
     )
     parser.add_argument(
         "--residual",
@@ -559,6 +460,5 @@ if __name__ == "__main__":
         epochs=args.epochs,
         learning_rate=args.lr,
         sample_frac=args.sample,
-        model_type=args.model_type,
         use_residual=args.residual,
     )
