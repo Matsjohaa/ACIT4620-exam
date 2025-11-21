@@ -18,6 +18,7 @@ from data_loader import (
     load_zone_data,
     WEATHER_FEATURES,
     ENGINEERED_FEATURES,
+    TEMPORAL_FEATURES,
 )
 
 
@@ -46,7 +47,7 @@ def build_test_sample(train_df, test_df):
 
     train_tail = train_df.tail(SEQ_LEN)
 
-    features = WEATHER_FEATURES + ENGINEERED_FEATURES
+    features = WEATHER_FEATURES + ENGINEERED_FEATURES + TEMPORAL_FEATURES
     features = [f for f in features if f in train_tail.columns]
 
     X_enc_raw = train_tail[features].values         # [168, F]

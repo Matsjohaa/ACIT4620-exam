@@ -48,6 +48,14 @@ ENGINEERED_FEATURES: List[str] = [
     "clear_sky_factor",  # 1 - cloudcover/100
 ]
 
+# Simple temporal features (cyclical encoding)
+TEMPORAL_FEATURES: List[str] = [
+    "hour_sin",          # sin(2π * hour/24) - daily cycle
+    "hour_cos",          # cos(2π * hour/24) - daily cycle
+    "day_sin",           # sin(2π * day_of_year/365) - seasonal cycle
+    "day_cos",           # cos(2π * day_of_year/365) - seasonal cycle
+]
+
 
 def compute_day_ahead_capacity_factor(df: pd.DataFrame) -> np.ndarray:
     """
@@ -100,7 +108,7 @@ def prepare_sequences_with_future(
         y:     np.ndarray of shape (n_samples, forecast_horizon)
     """
     if features is None:
-        features = WEATHER_FEATURES + ENGINEERED_FEATURES
+        features = WEATHER_FEATURES + ENGINEERED_FEATURES + TEMPORAL_FEATURES
 
     available_features = [f for f in features if f in df.columns]
 
