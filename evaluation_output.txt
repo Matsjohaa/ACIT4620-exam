@@ -1,0 +1,75 @@
+================================================================================
+EVALUATING ALL ZONES
+================================================================================
+Using ATTENTION model architecture (~275K parameters)
+Using WEATHER FORECASTS (realistic scenario)
+
+================================================================================
+EVALUATING ENCODER-DECODER MODEL - IT-NORD
+================================================================================
+
+Using device: mps
+Loaded IT-NORD train: 94507 records (2015-01-02 00:00:00 to 2025-10-26 00:00:00)
+Loaded IT-NORD test: 336 records (2025-10-27 00:00:00 to 2025-11-09 23:00:00)
+Loaded IT-NORD test (ACTUAL WEATHER): 336 records (2025-10-27 00:00:00 to 2025-11-09 23:00:00)
+
+Zone: IT-NORD
+Installed capacity: 12799.50 MW
+Features: 19
+Forecast length: 336 hours
+Loaded model from models/it-nord/model.pt
+
+Generating FORECAST WEATHER predictions...
+  → Zeroed 192/336 nighttime hours (57.1%)
+  → Active daytime hours: 144 (42.9%)
+
+Generating ACTUAL WEATHER predictions...
+  → Zeroed 193/336 nighttime hours (57.4%)
+  → Active daytime hours: 143 (42.6%)
+
+================================================================================
+RESULTS COMPARISON
+================================================================================
+Scenario             MAE (MW)     RMSE (MW)    R²        
+--------------------------------------------------------------------------------
+Forecast Weather     396.93       767.28       0.703     
+Actual Weather       353.63       709.53       0.746     
+================================================================================
+
+================================================================================
+GENERATING REPORTS
+================================================================================
+Saved comparison CSV to results/it-nord/predictions_comparison.csv
+Saved forecast comparison plot to results/it-nord/forecast_comparison.png
+Saved scatter comparison plot to results/it-nord/scatter_comparison.png
+Saved error comparison plot to results/it-nord/error_comparison.png
+Saved comparison metrics table to results/it-nord/metrics_comparison.csv
+
+================================================================================
+DETAILED METRICS COMPARISON
+================================================================================
+Mean Absolute Error (MAE)............... Forecast:       396.93 MW  Actual:       353.63 MW
+Root Mean Square Error (RMSE)........... Forecast:       767.28 MW  Actual:       709.53 MW
+R² Score................................ Forecast:          0.7032  Actual:          0.7462
+Mean Error (Bias)....................... Forecast:      -297.82 MW  Actual:      -340.85 MW
+Median Absolute Error................... Forecast:         0.00 MW  Actual:         0.00 MW
+Std Dev of Errors....................... Forecast:       707.12 MW  Actual:       622.30 MW
+================================================================================
+
+================================================================================
+IT-NORD - ALL REPORTS GENERATED SUCCESSFULLY
+================================================================================
+
+================================================================================
+SUMMARY OF ALL ZONES
+================================================================================
+Zone         Scenario             MAE (MW)     RMSE (MW)    R²        
+--------------------------------------------------------------------------------
+IT-NORD      Forecast Weather     396.93       767.28       0.703     
+             Actual Weather       353.63       709.53       0.746     
+--------------------------------------------------------------------------------
+================================================================================
+
+Saved summary to results/all_zones_summary.csv
+
+✅ ALL EVALUATIONS COMPLETED!
