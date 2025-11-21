@@ -14,6 +14,7 @@ from matplotlib.dates import DateFormatter
 
 from model import EncoderDecoderCNNLSTM
 from model_large import LargeEncoderDecoderCNNLSTM
+from model_attention import EncoderDecoderAttentionCNNLSTM
 from data_loader import (
     load_zone_data,
     WEATHER_FEATURES,
@@ -106,12 +107,18 @@ def apply_nighttime_zeroing(cf_pred, test_df):
     return cf_pred_zeroed
 
 
-def load_model(zone, n_features, device, use_large_model=False):
+def load_model(zone, n_features, device, use_large_model=False, use_attention=False):
     """Load the encoder-decoder model."""
     models_dir = Path("models") / zone.lower()
     model_path = models_dir / "model.pt"
     
-    if use_large_model:
+    if use_attention:
+        model = EncoderDecoderAttentionCNNLSTM(
+            enc_sequence_length=SEQ_LEN,
+            dec_sequence_length=HORIZON,
+            n_features=n_features,
+        ).to(device)
+    elif use_large_model:
         model = LargeEncoderDecoderCNNLSTM(
             enc_sequence_length=SEQ_LEN,
             dec_sequence_length=HORIZON,
@@ -650,7 +657,7 @@ def create_comparison_metrics_table(results_forecast, results_actual, output_pat
     print("=" * 80)
 
 
-def evaluate_zone(zone, use_large_model=False, use_actual_weather=False):
+def evaluate_zone(zone, use_large_model=False, use_actual_weather=False, use_attention=False):
     """Evaluate a single zone with both forecast and actual weather."""
     print("\n" + "=" * 80)
     print(f"EVALUATING ENCODER-DECODER MODEL - {zone}")
@@ -676,7 +683,7 @@ def evaluate_zone(zone, use_large_model=False, use_actual_weather=False):
     
     # Load normalization params and model
     mean, std = load_norm_params(models_dir / "norm.npz")
-    model = load_model(zone, n_features, device, use_large_model)
+    model = load_model(zone, n_features, device, use_large_model, use_attention)
     
     # Evaluate both scenarios
     results_forecast = evaluate_single_scenario(
@@ -745,6 +752,7 @@ def main():
     zones_to_eval = ZONES
     use_large_model = False
     use_actual_weather = False
+    use_attention = False
     
     if len(sys.argv) > 1:
         # First pass: collect flags
@@ -753,6 +761,8 @@ def main():
                 use_large_model = True
             elif arg == "--actual-weather":
                 use_actual_weather = True
+            elif arg == "--attention":
+                use_attention = True
         
         # Second pass: collect zones (skip flags)
         for i, arg in enumerate(sys.argv[1:], start=1):
@@ -767,7 +777,9 @@ def main():
     print("=" * 80)
     print("EVALUATING ALL ZONES")
     print("=" * 80)
-    if use_large_model:
+    if use_attention:
+        print("Using ATTENTION model architecture (~275K parameters)")
+    elif use_large_model:
         print("Using LARGE model architecture (2.5M parameters)")
     else:
         print("Using small model architecture (242K parameters)")
@@ -780,7 +792,7 @@ def main():
     all_results = []
     for zone in zones_to_eval:
         try:
-            result = evaluate_zone(zone, use_large_model, use_actual_weather)
+            result = evaluate_zone(zone, use_large_model, use_actual_weather, use_attention)
             all_results.append(result)
         except Exception as e:
             print(f"\n❌ ERROR evaluating {zone}: {e}")
