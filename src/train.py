@@ -37,6 +37,10 @@ from model_large import (  # type: ignore
     LargeEncoderDecoderCNNLSTM,
 )
 
+from model_attention import (  # type: ignore
+    EncoderDecoderAttentionCNNLSTM,
+)
+
 
 class ImprovedLoss(nn.Module):
     """
@@ -172,6 +176,7 @@ def train_model(
     learning_rate: float = 0.001,
     sample_frac: Optional[float] = None,
     use_large_model: bool = False,
+    use_attention: bool = False,
 ) -> str:
     """
     Train EncoderDecoderCNNLSTM model using PyTorch (direct prediction mode).
@@ -184,6 +189,9 @@ def train_model(
         epochs: Number of training epochs.
         validation_split: Fraction of data for validation.
         learning_rate: Learning rate for optimizer.
+        sample_frac: Optional fraction of data to use (for testing).
+        use_large_model: Whether to use large model (not recommended).
+        use_attention: Whether to use attention mechanism (experimental).
         sample_frac: Fraction of data to use (for testing, e.g., 0.1 = 10%).
         use_large_model: If True, use large model with ~2.5M parameters.
     """
@@ -326,7 +334,14 @@ def train_model(
     # ------------------------------------------------------------------
     print("\n5. Building model...")
 
-    if use_large_model:
+    if use_attention:
+        print("Using ATTENTION model with temporal awareness (~280k parameters)")
+        model: nn.Module = EncoderDecoderAttentionCNNLSTM(
+            enc_sequence_length=sequence_length,
+            dec_sequence_length=forecast_horizon,
+            n_features=n_features,
+        ).to(device)
+    elif use_large_model:
         print("Using LARGE model (~1M parameters)")
         model: nn.Module = LargeEncoderDecoderCNNLSTM(
             enc_sequence_length=sequence_length,
@@ -350,7 +365,7 @@ def train_model(
         variance_weight=0.2           # Encourage prediction diversity
     )
     print("\n📊 Using ImprovedLoss:")
-    print("   • Asymmetric penalties: 2.0x for underprediction (fixes -48% bias)")
+    print("   • Asymmetric penalties: 2.0x for underprediction (fixes bias)")
     print("   • Production weighting: 0.3 (focus on high-production hours)")
     print("   • Variance penalty: 0.2 (encourage prediction diversity)")
     
@@ -586,6 +601,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Use large model with ~2.5M parameters (default: standard 242k model)"
     )
+    parser.add_argument(
+        "--attention",
+        action="store_true",
+        help="Use attention mechanism for temporal awareness (experimental, ~280k parameters)"
+    )
 
     args = parser.parse_args()
 
@@ -596,4 +616,5 @@ if __name__ == "__main__":
         learning_rate=args.lr,
         sample_frac=args.sample,
         use_large_model=args.large_model,
+        use_attention=args.attention,
     )
