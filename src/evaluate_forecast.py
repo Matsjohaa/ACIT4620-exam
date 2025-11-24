@@ -749,7 +749,7 @@ def evaluate_zone(zone, use_large_model=False, use_actual_weather=False, use_att
 
 def main():
     # Parse command line arguments
-    zones_to_eval = ZONES
+    zones_to_eval = []  # Empty list means evaluate ALL zones by default
     use_large_model = False
     use_actual_weather = False
     use_attention = False
@@ -773,6 +773,10 @@ def main():
                         break
                     zones_to_eval.append(z.upper())
                 break
+    
+    # If no zones specified, evaluate ALL zones
+    if not zones_to_eval:
+        zones_to_eval = ZONES
     
     print("=" * 80)
     print("EVALUATING ALL ZONES")
