@@ -48,6 +48,14 @@ ENGINEERED_FEATURES: List[str] = [
     "clear_sky_factor",  # 1 - cloudcover/100
 ]
 
+# Simple temporal features (cyclical encoding)
+TEMPORAL_FEATURES: List[str] = [
+    "hour_sin",          # sin(2π * hour/24) - daily cycle
+    "hour_cos",          # cos(2π * hour/24) - daily cycle
+    "day_sin",           # sin(2π * day_of_year/365) - seasonal cycle
+    "day_cos",           # cos(2π * day_of_year/365) - seasonal cycle
+]
+
 
 def compute_day_ahead_capacity_factor(df: pd.DataFrame) -> np.ndarray:
     """
@@ -76,16 +84,14 @@ def prepare_sequences_with_future(
     sequence_length: int = 168,
     forecast_horizon: int = 336,
     features: Optional[List[str]] = None,
-    use_residual: bool = False,
+    filter_nighttime: bool = True,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Build encoder–decoder sequences for the CNN–LSTM model.
+    Build encoder–decoder sequences for the CNN–LSTM model (direct prediction).
 
     Encoder input  X_enc: past `sequence_length` hours of weather/features.
     Decoder input  X_dec: next `forecast_horizon` hours of weather/features.
-    Target         y:     next `forecast_horizon` hours of:
-                         - capacity_factor (use_residual=False), or
-                         - residual = capacity_factor - day_ahead_capacity_factor.
+    Target         y:     next `forecast_horizon` hours of capacity_factor.
 
     Args:
         df: Processed zone DataFrame sorted by date.
@@ -93,7 +99,8 @@ def prepare_sequences_with_future(
         forecast_horizon: Number of future hours to forecast.
         features: Optional list of feature columns to include. If None,
                   WEATHER_FEATURES + ENGINEERED_FEATURES are used.
-        use_residual: If True, y is residual instead of raw capacity_factor.
+        filter_nighttime: If True, only train on sequences with significant daytime hours.
+                         This prevents model from wasting capacity learning night→zero.
 
     Returns:
         X_enc: np.ndarray of shape (n_samples, sequence_length, n_features)
@@ -101,24 +108,28 @@ def prepare_sequences_with_future(
         y:     np.ndarray of shape (n_samples, forecast_horizon)
     """
     if features is None:
-        features = WEATHER_FEATURES + ENGINEERED_FEATURES
+        features = WEATHER_FEATURES + ENGINEERED_FEATURES + TEMPORAL_FEATURES
 
     available_features = [f for f in features if f in df.columns]
 
     if "capacity_factor" not in df.columns:
         raise ValueError("capacity_factor column not found in data")
+    
+    # Get radiation values for nighttime filtering
+    if filter_nighttime and "shortwave_radiation" in df.columns:
+        radiation = df["shortwave_radiation"].values
+        RADIATION_THRESHOLD = 1e-3  # Same as evaluation
+    else:
+        radiation = None
 
     X_data = df[available_features].values
-
-    if use_residual:
-        day_ahead_cf = compute_day_ahead_capacity_factor(df)
-        y_base = df["capacity_factor"].values - day_ahead_cf
-    else:
-        y_base = df["capacity_factor"].values
+    y_base = df["capacity_factor"].values
 
     X_enc_list: List[np.ndarray] = []
     X_dec_list: List[np.ndarray] = []
     y_list: List[np.ndarray] = []
+    
+    skipped_nighttime = 0
 
     for i in range(len(df) - sequence_length - forecast_horizon + 1):
         enc_start = i
@@ -129,20 +140,40 @@ def prepare_sequences_with_future(
         X_dec = X_data[enc_end:dec_end]
         y_seq = y_base[enc_end:dec_end]
 
+        # Skip sequences with NaNs
         if (
-            not np.isnan(X_enc).any()
-            and not np.isnan(X_dec).any()
-            and not np.isnan(y_seq).any()
+            np.isnan(X_enc).any()
+            or np.isnan(X_dec).any()
+            or np.isnan(y_seq).any()
         ):
-            X_enc_list.append(X_enc)
-            X_dec_list.append(X_dec)
-            y_list.append(y_seq)
+            continue
+        
+        # Filter nighttime-only sequences (optimization for daytime-focused training)
+        if filter_nighttime and radiation is not None:
+            # Check radiation in forecast horizon
+            rad_forecast = radiation[enc_end:dec_end]
+            daytime_hours = np.sum(rad_forecast >= RADIATION_THRESHOLD)
+            daytime_fraction = daytime_hours / forecast_horizon
+            
+            # Skip if less than 20% daytime hours (mostly nighttime)
+            # This prevents wasting model capacity on trivial night→zero patterns
+            if daytime_fraction < 0.2:
+                skipped_nighttime += 1
+                continue
+
+        X_enc_list.append(X_enc)
+        X_dec_list.append(X_dec)
+        y_list.append(y_seq)
 
     X_enc = np.array(X_enc_list)
     X_dec = np.array(X_dec_list)
     y = np.array(y_list)
 
     print(f"Created {len(X_enc)} encoder–decoder sequences:")
+    if filter_nighttime and skipped_nighttime > 0:
+        total_possible = len(X_enc) + skipped_nighttime
+        print(f"  → Filtered out {skipped_nighttime}/{total_possible} nighttime-heavy sequences ({100*skipped_nighttime/total_possible:.1f}%)")
+        print(f"  → Kept {len(X_enc)} sequences with meaningful daytime hours")
     print(
         f"  Encoder input shape: {X_enc.shape} "
         f"(samples, enc_timesteps={sequence_length}, features={len(available_features)})"
@@ -156,19 +187,28 @@ def prepare_sequences_with_future(
     return X_enc, X_dec, y
 
 
-def load_zone_data(zone: str, split: str = "train") -> pd.DataFrame:
+def load_zone_data(zone: str, split: str = "train", use_actual_weather: bool = False) -> pd.DataFrame:
     """
     Load processed data for a specific bidding zone.
 
     Args:
         zone: Zone name (e.g., 'IT-NORD').
         split: 'train' or 'test'.
+        use_actual_weather: If True and split='test', load from test_actual_weather directory.
+                           This uses observed weather instead of forecasts for testing.
 
     Returns:
         DataFrame with zone data, sorted by date, with engineered features added.
     """
     zone_lower = zone.lower().replace("-", "_")
-    filepath = Path(f"data/processed/{split}/{zone_lower}.csv")
+    
+    # Use actual weather test directory if requested
+    if use_actual_weather and split == "test":
+        filepath = Path(f"data/processed/test_actual_weather/{zone_lower}.csv")
+    elif split == "test":
+        filepath = Path(f"data/processed/test_forecast/{zone_lower}.csv")
+    else:
+        filepath = Path(f"data/processed/{split}/{zone_lower}.csv")
 
     if not filepath.exists():
         raise FileNotFoundError(f"Data file not found: {filepath}")
@@ -178,11 +218,15 @@ def load_zone_data(zone: str, split: str = "train") -> pd.DataFrame:
     df = df.sort_values("date").reset_index(drop=True)
 
     # Add engineered features to help model learn weather patterns
-    df["solar_potential"] = df["shortwave_radiation"] * (1 - df["cloudcover"] / 100)
-    df["clear_sky_factor"] = 1 - df["cloudcover"] / 100
+    # Handle both 'cloudcover' and 'cloud_cover' column names
+    cloud_col = 'cloudcover' if 'cloudcover' in df.columns else 'cloud_cover'
+    if cloud_col in df.columns:
+        df["solar_potential"] = df["shortwave_radiation"] * (1 - df[cloud_col] / 100)
+        df["clear_sky_factor"] = 1 - df[cloud_col] / 100
 
+    weather_type = " (ACTUAL WEATHER)" if use_actual_weather and split == "test" else ""
     print(
-        f"Loaded {zone} {split}: {len(df)} records "
+        f"Loaded {zone} {split}{weather_type}: {len(df)} records "
         f"({df['date'].min()} to {df['date'].max()})"
     )
 

@@ -1,0 +1,7 @@
+Metric,Forecast Weather,Actual Weather
+Mean Absolute Error (MAE),165.33 MW,129.85 MW
+Root Mean Square Error (RMSE),332.38 MW,252.52 MW
+R² Score,0.7931,0.8806
+Mean Error (Bias),-17.19 MW,-63.59 MW
+Median Absolute Error,0.38 MW,0.55 MW
+Std Dev of Errors,331.94 MW,244.38 MW

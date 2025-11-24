@@ -27,48 +27,134 @@ from data_loader import (  # type: ignore
     normalize_data,
 )
 
-from model import (  # type: ignore
-    EncoderDecoderCNNLSTM,
+from model_attention import (  # type: ignore
+    EncoderDecoderAttentionCNNLSTM,
     get_device,
     print_model_summary,
 )
 
 
-class VariationAwareLoss(nn.Module):
+class ImprovedLoss(nn.Module):
     """
-    Custom loss that encourages predictions to vary more.
-    Combines MSE with a penalty for low variance in predictions.
+    Improved loss function with asymmetric penalty for underprediction.
+    
+    Key improvements:
+    1. Penalizes underprediction MORE than overprediction (addresses -48% bias)
+    2. Weights errors by production magnitude (focuses on high-production periods)
+    3. Variance penalty for prediction diversity
     """
-
-    def __init__(self, variance_weight: float = 0.2) -> None:
+    
+    def __init__(self, 
+                 underprediction_weight: float = 2.0,
+                 production_weight: float = 0.3,
+                 variance_weight: float = 0.2):
         super().__init__()
-        self.mse = nn.MSELoss()
+        self.underprediction_weight = underprediction_weight
+        self.production_weight = production_weight
         self.variance_weight = variance_weight
-
+    
     def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         """
-        Compute variation-aware loss.
-
+        Compute improved loss.
+        
         Args:
-            pred: Model predictions, shape (batch, horizon).
-            target: Ground truth, same shape as pred.
-
+            pred: Model predictions, shape (batch, horizon)
+            target: Ground truth, same shape as pred
+        
         Returns:
-            Scalar loss tensor.
+            Scalar loss with asymmetric penalties
         """
-        # Standard MSE loss
-        mse_loss = self.mse(pred, target)
-
-        # Variance penalty: penalize if predictions have low variance
-        pred_var = torch.var(pred, dim=1).mean()
-        target_var = torch.var(target, dim=1).mean()
-
-        # Penalize when prediction variance is much lower than target variance
-        variance_penalty = torch.relu(target_var - pred_var) / (target_var + 1e-8)
-
+        # 1. Asymmetric loss: penalize underprediction more
+        error = target - pred
+        
+        # Underprediction (error > 0): higher penalty
+        # Overprediction (error < 0): standard penalty
+        squared_error = error ** 2
+        asymmetric_loss = torch.where(
+            error > 0,
+            self.underprediction_weight * squared_error,  # 2x penalty for underprediction
+            squared_error  # Normal penalty for overprediction
+        )
+        
+        # 2. Production-weighted loss: focus on high-production hours
+        # Weight by target magnitude (normalized)
+        production_weights = 1.0 + self.production_weight * (target / (target.max() + 1e-8))
+        weighted_loss = (asymmetric_loss * production_weights).mean()
+        
+        # 3. Variance penalty: encourage prediction diversity
+        # Only compute for non-zero targets (daytime)
+        mask = target > 0.01
+        if mask.sum() > 1:
+            pred_daytime = pred[mask]
+            target_daytime = target[mask]
+            
+            pred_var = torch.var(pred_daytime)
+            target_var = torch.var(target_daytime)
+            variance_penalty = torch.relu(target_var - pred_var) / (target_var + 1e-8)
+        else:
+            variance_penalty = torch.tensor(0.0, device=pred.device)
+        
         # Combined loss
-        total_loss = mse_loss + self.variance_weight * variance_penalty
+        total_loss = weighted_loss + self.variance_weight * variance_penalty
+        
+        return total_loss
 
+
+class DaytimeFocusedLoss(nn.Module):
+    """
+    Loss function that focuses training on daytime hours (radiation > 0).
+    This prevents the model from wasting capacity learning trivial night→zero patterns.
+    
+    Nighttime hours contribute minimally to the loss, allowing the model to 
+    focus on learning the complex daytime solar production patterns.
+    """
+    
+    def __init__(self, variance_weight: float = 0.2, nighttime_weight: float = 0.1):
+        super().__init__()
+        self.variance_weight = variance_weight
+        self.nighttime_weight = nighttime_weight  # Reduced weight for nighttime
+    
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        """
+        Compute daytime-focused loss.
+        
+        Args:
+            pred: Model predictions, shape (batch, horizon)
+            target: Ground truth, same shape as pred
+        
+        Returns:
+            Scalar loss with higher weight on daytime hours
+        """
+        # Identify daytime vs nighttime based on target values
+        # If target > 0.01, consider it daytime (non-trivial production)
+        is_daytime = (target > 0.01).float()
+        
+        # Create weight mask: 1.0 for daytime, nighttime_weight for nighttime
+        weights = is_daytime + (1 - is_daytime) * self.nighttime_weight
+        
+        # Weighted MSE loss
+        squared_errors = (pred - target) ** 2
+        weighted_mse = (squared_errors * weights).mean()
+        
+        # Variance penalty (only on daytime hours)
+        if is_daytime.sum() > 0:
+            # Mask to get only daytime predictions/targets
+            daytime_mask = is_daytime > 0.5
+            pred_daytime = pred[daytime_mask]
+            target_daytime = target[daytime_mask]
+            
+            if len(pred_daytime) > 1:  # Need at least 2 samples for variance
+                pred_var = torch.var(pred_daytime)
+                target_var = torch.var(target_daytime)
+                variance_penalty = torch.relu(target_var - pred_var) / (target_var + 1e-8)
+            else:
+                variance_penalty = torch.tensor(0.0, device=pred.device)
+        else:
+            variance_penalty = torch.tensor(0.0, device=pred.device)
+        
+        # Combined loss
+        total_loss = weighted_mse + self.variance_weight * variance_penalty
+        
         return total_loss
 
 
@@ -81,10 +167,10 @@ def train_model(
     validation_split: float = 0.2,
     learning_rate: float = 0.001,
     sample_frac: Optional[float] = None,
-    use_residual: bool = False,
+    dropout: float = 0.15,
 ) -> str:
     """
-    Train EncoderDecoderCNNLSTM model using PyTorch.
+    Train EncoderDecoderAttentionCNNLSTM model using PyTorch (direct prediction mode).
 
     Args:
         zones: List of zone names (None = all zones).
@@ -94,8 +180,8 @@ def train_model(
         epochs: Number of training epochs.
         validation_split: Fraction of data for validation.
         learning_rate: Learning rate for optimizer.
-        sample_frac: Fraction of data to use (for testing, e.g., 0.1 = 10%).
-        use_residual: If True, train on residual (cf - day_ahead_cf).
+        sample_frac: Optional fraction of data to use (for testing).
+        dropout: Dropout rate for regularization (default: 0.15).
     """
 
     device = get_device()
@@ -138,7 +224,6 @@ def train_model(
             df,
             sequence_length=sequence_length,
             forecast_horizon=forecast_horizon,
-            use_residual=use_residual,
         )
         print(f"   - Created {len(X_enc_zone)} encoder–decoder sequences")
 
@@ -237,16 +322,32 @@ def train_model(
     # ------------------------------------------------------------------
     print("\n5. Building model...")
 
-    model: nn.Module = EncoderDecoderCNNLSTM(
+    print(f"Using ATTENTION model with temporal awareness (~280k parameters, dropout={dropout})")
+    model: nn.Module = EncoderDecoderAttentionCNNLSTM(
         enc_sequence_length=sequence_length,
         dec_sequence_length=forecast_horizon,
         n_features=n_features,
+        dropout=dropout,
     ).to(device)
 
     print_model_summary(model, sequence_length, n_features)
 
-    criterion: nn.Module = VariationAwareLoss(variance_weight=0.2)
-    optimizer: optim.Optimizer = optim.NAdam(model.parameters(), lr=learning_rate)
+    # Using improved loss with asymmetric penalties to fix underprediction bias
+    criterion: nn.Module = ImprovedLoss(
+        underprediction_weight=2.0,  # 2x penalty for underprediction
+        production_weight=0.3,        # Focus on high-production hours
+        variance_weight=0.2           # Encourage prediction diversity
+    )
+    print("\n📊 Using ImprovedLoss:")
+    print("   • Asymmetric penalties: 2.0x for underprediction (fixes bias)")
+    print("   • Production weighting: 0.3 (focus on high-production hours)")
+    print("   • Variance penalty: 0.2 (encourage prediction diversity)")
+    
+    optimizer: optim.Optimizer = optim.NAdam(
+        model.parameters(), 
+        lr=learning_rate,
+        weight_decay=1e-4  # L2 regularization to prevent overfitting
+    )
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="min", factor=0.5, patience=5
     )
@@ -265,6 +366,14 @@ def train_model(
         "lr": [],
     }
     best_val_loss: float = float("inf")
+    best_model_state = None
+    patience = 5  # Early stopping patience
+    patience_counter = 0
+    
+    print(f"Early stopping enabled: patience={patience} epochs")
+    print(f"Weight decay (L2): 1e-4")
+    print(f"Gradient clipping: max_norm=1.0")
+    print("=" * 80)
 
     for epoch in range(epochs):
         # ------------------- TRAIN -------------------
@@ -285,6 +394,10 @@ def train_model(
 
             loss = criterion(y_pred, y_batch)
             loss.backward()
+            
+            # Gradient clipping to prevent exploding gradients
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            
             optimizer.step()
 
             train_loss += loss.item()
@@ -335,6 +448,9 @@ def train_model(
         # Save best model
         if val_loss < best_val_loss:
             best_val_loss = val_loss
+            best_model_state = model.state_dict().copy()
+            patience_counter = 0  # Reset patience counter
+            
             model_filename = "model.pt"
             torch.save(
                 {
@@ -347,6 +463,17 @@ def train_model(
                 models_dir / model_filename,
             )
             print(f"  ✓ Saved best model to {models_dir / model_filename} (val_loss: {val_loss:.5f})")
+        else:
+            patience_counter += 1
+            print(f"  ⚠ No improvement for {patience_counter}/{patience} epochs")
+
+        # Early stopping check
+        if patience_counter >= patience:
+            print(f"\n⚠ Early stopping triggered at epoch {epoch+1}")
+            print(f"   Best validation loss: {best_val_loss:.5f} (from epoch {epoch+1-patience_counter})")
+            print(f"   Restoring best model weights...")
+            model.load_state_dict(best_model_state)
+            break
 
         scheduler.step(val_loss)
 
@@ -444,12 +571,10 @@ if __name__ == "__main__":
         help="Sample fraction: e.g. 0.1 for 10%%",
     )
     parser.add_argument(
-        "--residual",
-        action="store_true",
-        help=(
-            "Train on residual (capacity_factor - day_ahead_cf) "
-            "instead of raw capacity_factor"
-        ),
+        "--dropout",
+        type=float,
+        default=0.15,
+        help="Dropout rate for regularization (default: 0.15)"
     )
 
     args = parser.parse_args()
@@ -460,5 +585,5 @@ if __name__ == "__main__":
         epochs=args.epochs,
         learning_rate=args.lr,
         sample_frac=args.sample,
-        use_residual=args.residual,
+        dropout=args.dropout,
     )
