@@ -238,7 +238,7 @@ def main():
     print(f"\nTest data saved to: {output_dir}")
     print("\nTo evaluate with actual weather, modify evaluate_forecast.py")
     print("to load from 'data/processed/test_actual_weather' instead of")
-    print("'data/processed/test'.")
+    print("'data/processed/test_forecast'.")
     print("=" * 80)
 
 

@@ -27,18 +27,10 @@ from data_loader import (  # type: ignore
     normalize_data,
 )
 
-from model import (  # type: ignore
-    EncoderDecoderCNNLSTM,
-    get_device,
-    print_model_summary,
-)
-
-from model_large import (  # type: ignore
-    LargeEncoderDecoderCNNLSTM,
-)
-
 from model_attention import (  # type: ignore
     EncoderDecoderAttentionCNNLSTM,
+    get_device,
+    print_model_summary,
 )
 
 
@@ -175,11 +167,10 @@ def train_model(
     validation_split: float = 0.2,
     learning_rate: float = 0.001,
     sample_frac: Optional[float] = None,
-    use_large_model: bool = False,
-    use_attention: bool = False,
+    dropout: float = 0.15,
 ) -> str:
     """
-    Train EncoderDecoderCNNLSTM model using PyTorch (direct prediction mode).
+    Train EncoderDecoderAttentionCNNLSTM model using PyTorch (direct prediction mode).
 
     Args:
         zones: List of zone names (None = all zones).
@@ -190,10 +181,7 @@ def train_model(
         validation_split: Fraction of data for validation.
         learning_rate: Learning rate for optimizer.
         sample_frac: Optional fraction of data to use (for testing).
-        use_large_model: Whether to use large model (not recommended).
-        use_attention: Whether to use attention mechanism (experimental).
-        sample_frac: Fraction of data to use (for testing, e.g., 0.1 = 10%).
-        use_large_model: If True, use large model with ~2.5M parameters.
+        dropout: Dropout rate for regularization (default: 0.15).
     """
 
     device = get_device()
@@ -334,27 +322,13 @@ def train_model(
     # ------------------------------------------------------------------
     print("\n5. Building model...")
 
-    if use_attention:
-        print("Using ATTENTION model with temporal awareness (~280k parameters)")
-        model: nn.Module = EncoderDecoderAttentionCNNLSTM(
-            enc_sequence_length=sequence_length,
-            dec_sequence_length=forecast_horizon,
-            n_features=n_features,
-        ).to(device)
-    elif use_large_model:
-        print("Using LARGE model (~1M parameters)")
-        model: nn.Module = LargeEncoderDecoderCNNLSTM(
-            enc_sequence_length=sequence_length,
-            dec_sequence_length=forecast_horizon,
-            n_features=n_features,
-        ).to(device)
-    else:
-        print("Using standard model (~242k parameters)")
-        model: nn.Module = EncoderDecoderCNNLSTM(
-            enc_sequence_length=sequence_length,
-            dec_sequence_length=forecast_horizon,
-            n_features=n_features,
-        ).to(device)
+    print(f"Using ATTENTION model with temporal awareness (~280k parameters, dropout={dropout})")
+    model: nn.Module = EncoderDecoderAttentionCNNLSTM(
+        enc_sequence_length=sequence_length,
+        dec_sequence_length=forecast_horizon,
+        n_features=n_features,
+        dropout=dropout,
+    ).to(device)
 
     print_model_summary(model, sequence_length, n_features)
 
@@ -393,7 +367,7 @@ def train_model(
     }
     best_val_loss: float = float("inf")
     best_model_state = None
-    patience = 8  # Early stopping patience
+    patience = 5  # Early stopping patience
     patience_counter = 0
     
     print(f"Early stopping enabled: patience={patience} epochs")
@@ -597,14 +571,10 @@ if __name__ == "__main__":
         help="Sample fraction: e.g. 0.1 for 10%%",
     )
     parser.add_argument(
-        "--large-model",
-        action="store_true",
-        help="Use large model with ~2.5M parameters (default: standard 242k model)"
-    )
-    parser.add_argument(
-        "--attention",
-        action="store_true",
-        help="Use attention mechanism for temporal awareness (experimental, ~280k parameters)"
+        "--dropout",
+        type=float,
+        default=0.15,
+        help="Dropout rate for regularization (default: 0.15)"
     )
 
     args = parser.parse_args()
@@ -615,6 +585,5 @@ if __name__ == "__main__":
         epochs=args.epochs,
         learning_rate=args.lr,
         sample_frac=args.sample,
-        use_large_model=args.large_model,
-        use_attention=args.attention,
+        dropout=args.dropout,
     )

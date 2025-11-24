@@ -205,6 +205,8 @@ def load_zone_data(zone: str, split: str = "train", use_actual_weather: bool = F
     # Use actual weather test directory if requested
     if use_actual_weather and split == "test":
         filepath = Path(f"data/processed/test_actual_weather/{zone_lower}.csv")
+    elif split == "test":
+        filepath = Path(f"data/processed/test_forecast/{zone_lower}.csv")
     else:
         filepath = Path(f"data/processed/{split}/{zone_lower}.csv")
 
