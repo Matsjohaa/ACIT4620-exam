@@ -267,6 +267,40 @@ def get_attention_model(
     )
 
 
+def get_device() -> torch.device:
+    """
+    Get the best available device for PyTorch.
+    Priority: CUDA(gpu) > MPS (Apple Silicon) > CPU
+    """
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        return torch.device("mps")
+    else:
+        return torch.device("cpu")
+
+
+def print_model_summary(model: nn.Module, sequence_length: int, n_features: int) -> None:
+    """
+    Print a summary of the model architecture and parameter count.
+    
+    Args:
+        model: The PyTorch model to summarize
+        sequence_length: Length of input sequences
+        n_features: Number of input features
+    """
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    
+    print(f"\n{'='*60}")
+    print(f"MODEL SUMMARY: {model.__class__.__name__}")
+    print(f"{'='*60}")
+    print(f"Input shape: [batch, {sequence_length}, {n_features}]")
+    print(f"Total parameters: {total_params:,}")
+    print(f"Trainable parameters: {trainable_params:,}")
+    print(f"{'='*60}\n")
+
+
 if __name__ == "__main__":
     # Test model
     model = get_attention_model(n_features=19)
