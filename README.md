@@ -18,8 +18,10 @@ Run `src/train.py` to train a zone-specific attention-based CNN-LSTM model. Prov
 ```bash
 python src/train.py --zones IT-NORD --epochs 25 --batch-size 32 --dropout 0.25
 ```
+**Note:** The training loop was tuned on Apple Silicon (MPS backend). On Windows/Linux machines use CUDA (when available) or CPU-only mode, and consider enabling `--sample` or reducing the forecast horizon if you run into memory issues.
 
 Useful flags:
+
 - `--zones IT-NORD IT-SUD` — train multiple zones sequentially.
 - `--sample 0.2` — randomly subsample 20% of the training rows (quick smoke-test).
 - `--lr 0.0005` — override learning rate.
